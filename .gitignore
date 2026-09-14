@@ -43,3 +43,6 @@ dist/
 # Expo / EAS
 eas.json
 .expo/
+
+# TypeScript build cache
+*.tsbuildinfo
