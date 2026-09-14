@@ -5,9 +5,14 @@ echo "[PassVGON] Iniciando aplicação..."
 echo "[PassVGON] APP_ENV: ${APP_ENV:-undefined}"
 echo "[PassVGON] SKIP_MIGRATIONS: ${SKIP_MIGRATIONS:-false}"
 
+PRISMA_BIN="./node_modules/.bin/prisma"
+if [ ! -x "$PRISMA_BIN" ]; then
+  PRISMA_BIN="npx --no prisma"
+fi
+
 if [ "${SKIP_MIGRATIONS:-false}" != "true" ]; then
   echo "[PassVGON] Executando migrações de banco de dados..."
-  if npx prisma migrate deploy; then
+  if $PRISMA_BIN migrate deploy; then
     echo "[PassVGON] Migrações aplicadas com sucesso."
   else
     echo "[PassVGON] ERRO ao aplicar migrações. Abortando."
