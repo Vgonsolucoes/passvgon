@@ -1,6 +1,32 @@
 import Link from "next/link";
 
-export default function LoginPage() {
+export const dynamic = "force-dynamic";
+
+interface LoginPageProps {
+  searchParams: { callbackUrl?: string; error?: string };
+}
+
+async function getCsrfToken(baseUrl: string): Promise<string> {
+  try {
+    const res = await fetch(`${baseUrl}/api/auth/csrf`, {
+      cache: "no-store",
+      headers: { cookie: "" }
+    });
+    const data = await res.json().catch(() => ({}));
+    return data.csrfToken ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export default async function LoginPage({ searchParams }: LoginPageProps) {
+  const callbackUrl = searchParams?.callbackUrl ?? "/dashboard";
+  const baseUrl =
+    process.env.NEXTAUTH_URL ??
+    process.env.VERCEL_URL ??
+    "http://localhost:3000";
+  const csrfToken = await getCsrfToken(baseUrl.replace(/\/$/, ""));
+
   return (
     <main className="min-h-screen flex items-center justify-center px-6 py-12 bg-gradient-to-br from-slate-50 to-blue-50 dark:from-slate-950 dark:to-slate-900">
       <div className="w-full max-w-md">
@@ -27,7 +53,20 @@ export default function LoginPage() {
               Informe suas credenciais para acessar o painel administrativo.
             </p>
 
+            {searchParams?.error && (
+              <div className="mb-6 p-3 rounded-lg bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 text-sm">
+                {searchParams.error === "CredentialsSignin"
+                  ? "E-mail ou senha inválidos."
+                  : searchParams.error === "MissingCSRF"
+                    ? "Sessão de login expirada. Tente novamente."
+                    : `Erro ao entrar: ${searchParams.error}`}
+              </div>
+            )}
+
             <form className="space-y-4" action="/api/auth/callback/credentials" method="POST">
+              <input type="hidden" name="csrfToken" value={csrfToken} />
+              <input type="hidden" name="callbackUrl" value={callbackUrl} />
+              <input type="hidden" name="json" value="true" />
               <div>
                 <label
                   htmlFor="email"
