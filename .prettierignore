@@ -1,0 +1,11 @@
+node_modules
+.next
+.prisma
+dist
+build
+coverage
+*.min.*
+package-lock.json
+.env*
+next-env.d.ts
+.prisma

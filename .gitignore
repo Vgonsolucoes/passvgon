@@ -1,0 +1,45 @@
+# Environment variables
+.env*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Next.js build output
+.next/
+out/
+
+# Prisma
+.prisma/
+
+# Uploads e backups
+uploads/
+backups/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# macOS
+.DS_Store
+
+# Test coverage
+coverage/
+
+# Build output
+dist/
+
+# IDEs
+.vscode/
+.idea/
+
+# Editor swap files
+*.swp
+*.swo
+*~
+
+# Expo / EAS
+eas.json
+.expo/
