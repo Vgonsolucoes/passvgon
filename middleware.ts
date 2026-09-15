@@ -5,6 +5,7 @@ import type { Session } from "next-auth";
 const PUBLIC_PATHS = [
   "/",
   "/login",
+  "/2fa",
   "/api/health",
   "/api/auth/",
   "/_next/static/",
@@ -15,6 +16,8 @@ const PUBLIC_PATHS = [
 ];
 
 const API_PUBLIC_PREFIXES = ["/api/health", "/api/auth"];
+
+const TWO_FACTOR_CHALLENGE = "/2fa";
 
 type NextAuthRequest = NextRequest & { auth: Session | null };
 
@@ -32,7 +35,12 @@ export default auth((req) => {
 
   if (isPublicPath || isApiPublic) {
     if (isLoggedIn && (pathname === "/login" || pathname === "/")) {
-      return NextResponse.redirect(new URL("/dashboard", nextUrl));
+      // Usuário já logado não precisa ficar em telas públicas
+      const needsTwoFactor =
+        r.auth?.user?.twoFactorRequired && !r.auth?.user?.twoFactorVerified;
+      return NextResponse.redirect(
+        new URL(needsTwoFactor ? TWO_FACTOR_CHALLENGE : "/dashboard", nextUrl)
+      );
     }
     return NextResponse.next();
   }
@@ -50,7 +58,24 @@ export default auth((req) => {
     );
   }
 
-  const userRole = r.auth?.user.role;
+  // --- Bloqueio 2FA obrigatório (sessão PROVISÓRIA sem 2FA verified) ---
+  const user = r.auth?.user;
+  const needsTwoFactor =
+    user?.twoFactorRequired && !user?.twoFactorVerified;
+  if (needsTwoFactor) {
+    // Página /2fa é a única privada que pode ser acessada
+    if (pathname !== TWO_FACTOR_CHALLENGE) {
+      if (isApiRoute) {
+        return NextResponse.json(
+          { message: "Segundo fator de autenticação pendente" },
+          { status: 403 }
+        );
+      }
+      return NextResponse.redirect(new URL(TWO_FACTOR_CHALLENGE, nextUrl));
+    }
+  }
+
+  const userRole = user?.role;
   const isAdminRoute = pathname.startsWith("/dashboard");
   if (
     isAdminRoute &&

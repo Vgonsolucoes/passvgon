@@ -1,8 +1,8 @@
 import NextAuth, { type DefaultSession } from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import { PrismaAdapter } from "@auth/prisma-adapter";
-import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
+import { verifyPassword, hashPassword } from "@/lib/password";
 import type { UserRole, UserStatus } from "@prisma/client";
 
 declare module "next-auth" {
@@ -12,6 +12,9 @@ declare module "next-auth" {
       role: UserRole;
       status: UserStatus;
       emailVerified: Date | null;
+      twoFactorEnabled: boolean;
+      twoFactorVerified: boolean;
+      twoFactorRequired: boolean;
     } & DefaultSession["user"];
   }
 
@@ -21,6 +24,8 @@ declare module "next-auth" {
     status: UserStatus;
     emailVerified: Date | null;
     passwordHash: string | null;
+    passwordAlgo: string | null;
+    twoFactorEnabled: boolean;
   }
 }
 
@@ -28,6 +33,10 @@ declare module "@auth/core/jwt" {
   interface JWT {
     role: UserRole;
     status: UserStatus;
+    emailVerified: Date | null;
+    twoFactorEnabled: boolean;
+    twoFactorVerified: boolean;
+    twoFactorRequired: boolean;
   }
 }
 
@@ -64,18 +73,37 @@ export const {
         if (!user || !user.passwordHash) return null;
         if (user.status !== "ACTIVE") return null;
 
-        const passwordValid = await bcrypt.compare(
+        const { valid, shouldUpgrade } = await verifyPassword(
           password,
-          user.passwordHash
+          user.passwordHash,
+          (user.passwordAlgo ?? "bcrypt") as "argon2id" | "bcrypt"
         );
-        if (!passwordValid) return null;
+        if (!valid) return null;
 
-        await prisma.user.update({
-          where: { id: user.id },
-          data: {
-            lastLoginAt: new Date()
+        // Upgrade transparente bcrypt → argon2id no próximo login válido
+        if (shouldUpgrade) {
+          try {
+            const { hash, algo } = await hashPassword(password);
+            await prisma.user.update({
+              where: { id: user.id },
+              data: { passwordHash: hash, passwordAlgo: algo }
+            });
+            user.passwordHash = hash;
+            user.passwordAlgo = algo;
+          } catch {
+            // ignora: não deve quebrar o login se o upgrade falhar
           }
-        });
+        }
+
+        const now = new Date();
+        try {
+          await prisma.user.update({
+            where: { id: user.id },
+            data: { lastLoginAt: now }
+          });
+        } catch {
+          // ignore
+        }
 
         return {
           id: user.id,
@@ -85,7 +113,9 @@ export const {
           role: user.role,
           status: user.status,
           emailVerified: user.emailVerified,
-          passwordHash: user.passwordHash
+          passwordHash: user.passwordHash,
+          passwordAlgo: user.passwordAlgo,
+          twoFactorEnabled: user.twoFactorEnabled
         };
       }
     })
@@ -110,13 +140,18 @@ export const {
   callbacks: {
     async jwt({ token, user, trigger, session }) {
       if (trigger === "update" && session) {
-        token = { ...token, ...session };
+        token = { ...token, ...(session as object) } as typeof token;
       }
       if (user) {
         token.id = user.id;
         token.role = user.role;
         token.status = user.status;
         token.emailVerified = user.emailVerified;
+        token.twoFactorEnabled = !!user.twoFactorEnabled;
+        // Quando usuário tem 2FA habilitado, sessão entra estado PROVISÓRIO
+        // até desafio TOTP válido (rota /2fa).
+        token.twoFactorRequired = !!user.twoFactorEnabled;
+        token.twoFactorVerified = !user.twoFactorEnabled;
       }
       return token;
     },
@@ -127,6 +162,9 @@ export const {
         session.user.status = token.status;
         session.user.emailVerified =
           (token.emailVerified as Date | null) ?? null;
+        session.user.twoFactorEnabled = !!token.twoFactorEnabled;
+        session.user.twoFactorVerified = !!token.twoFactorVerified;
+        session.user.twoFactorRequired = !!token.twoFactorRequired;
       }
       return session;
     },
@@ -150,28 +188,38 @@ export const {
       if (!user.id) return;
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const _ = isNewUser;
-      await prisma.auditLog.create({
-        data: {
-          userId: user.id,
-          action: "SIGN_IN",
-          entityType: "user",
-          entityId: user.id
-        }
-      });
+      try {
+        await prisma.auditLog.create({
+          data: {
+            userId: user.id,
+            action: "AUTH_SIGN_IN",
+            entityType: "user",
+            entityId: user.id,
+            result: "SUCCESS"
+          }
+        });
+      } catch {
+        // ignore
+      }
     },
     async signOut(data) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const ctx = data as any;
       const userId = ctx?.token?.id ?? ctx?.session?.userId;
       if (!userId) return;
-      await prisma.auditLog.create({
-        data: {
-          userId: String(userId),
-          action: "SIGN_OUT",
-          entityType: "user",
-          entityId: String(userId)
-        }
-      });
+      try {
+        await prisma.auditLog.create({
+          data: {
+            userId: String(userId),
+            action: "AUTH_SIGN_OUT",
+            entityType: "user",
+            entityId: String(userId),
+            result: "SUCCESS"
+          }
+        });
+      } catch {
+        // ignore
+      }
     }
   }
 });

@@ -40,6 +40,12 @@ COPY --from=builder /app/node_modules/tsx ./node_modules/tsx
 COPY --from=builder /app/node_modules/esbuild ./node_modules/esbuild
 COPY --from=builder /app/node_modules/typescript ./node_modules/typescript
 COPY --from=builder /app/node_modules/bcryptjs ./node_modules/bcryptjs
+COPY --from=builder /app/node_modules/@node-rs ./node_modules/@node-rs
+COPY --from=builder /app/node_modules/otplib ./node_modules/otplib
+COPY --from=builder /app/node_modules/hi-base32 ./node_modules/hi-base32
+COPY --from=builder /app/node_modules/qrcode ./node_modules/qrcode
+COPY --from=builder /app/node_modules/clsx ./node_modules/clsx
+COPY --from=builder /app/node_modules/tailwind-merge ./node_modules/tailwind-merge
 COPY --from=builder /app/node_modules/@types ./node_modules/@types
 COPY --from=builder /app/lib ./lib
 

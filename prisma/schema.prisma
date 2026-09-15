@@ -1,4 +1,4 @@
-// Prisma Schema for PassVGON
+// Prisma Schema for PassVGON — Cofre de Senhas de TI por Cliente
 // Documentation: https://pris.ly/d/prisma-schema
 
 generator client {
@@ -9,6 +9,8 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+// ====== Enums ======
 
 enum UserRole {
   ADMIN
@@ -29,18 +31,62 @@ enum TokenType {
   TWO_FACTOR
 }
 
+enum MembershipPermission {
+  VIEW_METADATA
+  REVEAL_SECRET
+  COPY_SECRET
+  CREATE_CREDENTIAL
+  EDIT_CREDENTIAL
+  DELETE_CREDENTIAL
+  MANAGE_ACCESS
+  AUDIT_VIEW
+}
+
+enum AuditResult {
+  SUCCESS
+  DENIED
+  FAILED
+  PENDING
+}
+
+enum CredentialCategory {
+  M365_TENANT
+  WINDOWS_SERVER_AD
+  REMOTE_ACCESS_RDP
+  FIREWALL_VPN
+  SWITCH_WIFI
+  PRINTER
+  NAS_BACKUP
+  DATABASE
+  SYSTEM_PORTAL
+  OTHER
+}
+
+enum AssetStatus {
+  ACTIVE
+  INACTIVE
+  MAINTENANCE
+  DECOMMISSIONED
+}
+
+// ====== Core Auth / Users ======
+
 model User {
   id            String    @id @default(cuid())
   email         String    @unique
   name          String?
   passwordHash  String?
+  passwordAlgo  String?   @default("bcrypt") // "argon2id" / "bcrypt" — upgrade transparente
   role          UserRole  @default(USER)
   status        UserStatus @default(ACTIVE)
   emailVerified DateTime?
   image         String?
-  twoFactorEnabled Boolean @default(false)
-  twoFactorSecret  String?
-  twoFactorBackupCodes String? // JSON serialized
+  twoFactorEnabled     Boolean  @default(false)
+  twoFactorSecretEnc   String?  // criptografado com ENCRYPTION_KEY (não plain)
+  twoFactorBackupCodes String?  // JSON array de strings hasheadas SHA-256 (uso único)
+  twoFactorLastTotp    String?  // anti-replay: último código TOTP usado no formato "<unix-step>:<code>"
+  lastTwoFactorAttemptAt DateTime?
+
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   lastLoginAt   DateTime?
@@ -49,7 +95,10 @@ model User {
   accounts       Account[]
   sessions       Session[]
   tokens         VerificationToken[]
+  memberships    ClientMembership[]
   auditLogs      AuditLog[]
+  authoredCredentials Credential[] @relation("AuthorCredentials")
+  updatedCredentials  Credential[] @relation("UpdaterCredentials")
 
   @@index([email])
   @@index([role])
@@ -85,6 +134,8 @@ model Session {
   sessionToken String   @unique
   userId       String
   expires      DateTime
+  twoFactorVerified Boolean @default(false) // sessão completa (passou por desafio 2FA quando usuário tem habilitado)
+  twoFactorRequired Boolean @default(false) // se true e verified=false, sessão é provisória (sem acesso ao cofre)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -113,21 +164,322 @@ model VerificationToken {
   @@map("verification_tokens")
 }
 
-model AuditLog {
-  id         String   @id @default(cuid())
-  userId     String?
-  action     String
-  entityType String
-  entityId   String?
-  ipAddress  String?
-  userAgent  String?
-  metadata   Json?
-  createdAt  DateTime @default(now())
+// ====== Multi-tenant (Clientes) ======
 
-  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+model Client {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  document    String?  // CNPJ / CPF
+  phone       String?
+  email       String?
+  address     String?
+  notes       String?  @db.Text
+  status      AssetStatus @default(ACTIVE)
+  logoUrl     String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  memberships         ClientMembership[]
+  credentials         Credential[]
+  microsoftTenants    MicrosoftTenant[]
+  servers             Server[]
+  printers            Printer[]
+  networks            Network[]
+  documents           Document[]
+  diagrams            Diagram[]
+  auditLogs           AuditLog[]
+
+  @@index([slug])
+  @@index([status])
+  @@index([name])
+  @@map("clients")
+}
+
+model ClientMembership {
+  id           String               @id @default(cuid())
+  clientId     String
+  userId       String
+  permissions  MembershipPermission[] // conjunto de permissões específicas por cliente
+  isPrimary    Boolean              @default(false)
+  joinedAt     DateTime             @default(now())
+
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([clientId, userId])
+  @@index([userId])
+  @@map("client_memberships")
+}
+
+// ====== Credencial — Cofre de senhas (entidade central) ======
+
+model Credential {
+  id                 String              @id @default(cuid())
+  clientId           String
+  title              String              // Título obrigatório (ex.: "Administrador Microsoft 365")
+  category           CredentialCategory  // Categoria obrigatória
+
+  username           String?             // Usuário / login
+  // ⚠️  Segredo CRIPTOGRAFADO com AES-256-GCM.
+  // Formato serializado: base64(nonce || authTag || ciphertext)
+  passwordEncrypted  String?             @db.Text // NUNCA retornado em listagens
+  passwordIv         String?             // deprecated: mantido para compatibilidade se necessário; sempre null em novas entradas
+  passwordAlgo       String              @default("aes-256-gcm")
+
+  url                String?             // URL de acesso
+  hostname           String?             // Hostname ou IP
+  domain             String?             // Domínio AD / tenant
+  tenantId           String?             // Microsoft Entra Tenant ID opcional
+  unit               String?             // Unidade (ex.: "Matriz")
+  environment        String?             // Ambiente (ex.: "Produção", "Homologação")
+  owner              String?             // Responsável
+  notesEncrypted     String?             @db.Text // Observações PROTEGIDAS (criptografadas, só reveladas em detalhes)
+  expiresAt          DateTime?
+
+  tags               CredentialTag[]
+  linkedServers      CredentialServer[]
+  linkedPrinters     CredentialPrinter[]
+  linkedDocuments    CredentialDocument[]
+  linkedNetworks     CredentialNetwork[]
+
+  authorId           String?
+  updaterId          String?
+  author             User?               @relation("AuthorCredentials", fields: [authorId], references: [id], onDelete: SetNull)
+  updater            User?               @relation("UpdaterCredentials", fields: [updaterId], references: [id], onDelete: SetNull)
+
+  client             Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  auditLogs          AuditLog[]
+
+  @@index([clientId])
+  @@index([category])
+  @@index([clientId, category])
+  @@index([clientId, username])
+  @@index([createdAt])
+  @@index([updatedAt])
+  @@index([expiresAt])
+  @@map("credentials")
+}
+
+model CredentialTag {
+  id            String       @id @default(cuid())
+  clientId      String
+  name          String
+  color         String?
+  credentials   Credential[]
+
+  @@unique([clientId, name])
+  @@map("credential_tags")
+}
+
+// ====== Vínculos N:M entre Credenciais e ativos complementares ======
+
+model CredentialServer {
+  credentialId String
+  serverId     String
+  addedAt      DateTime @default(now())
+
+  credential Credential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+  server     Server     @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@id([credentialId, serverId])
+  @@map("credential_servers")
+}
+
+model CredentialPrinter {
+  credentialId String
+  printerId    String
+  addedAt      DateTime @default(now())
+
+  credential Credential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+  printer    Printer    @relation(fields: [printerId], references: [id], onDelete: Cascade)
+
+  @@id([credentialId, printerId])
+  @@map("credential_printers")
+}
+
+model CredentialNetwork {
+  credentialId String
+  networkId    String
+  addedAt      DateTime @default(now())
+
+  credential Credential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+  network    Network    @relation(fields: [networkId], references: [id], onDelete: Cascade)
+
+  @@id([credentialId, networkId])
+  @@map("credential_networks")
+}
+
+model CredentialDocument {
+  credentialId String
+  documentId   String
+  addedAt      DateTime @default(now())
+
+  credential Credential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+  document   Document   @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@id([credentialId, documentId])
+  @@map("credential_documents")
+}
+
+// ====== Ativos complementares (não são a função principal) ======
+
+model MicrosoftTenant {
+  id               String   @id @default(cuid())
+  clientId         String
+  displayName      String
+  tenantId         String   // Microsoft Entra ID
+  defaultDomain    String?
+  adminPortalUrl   String?  @default("https://admin.microsoft.com")
+  notes            String?  @db.Text
+  status           AssetStatus @default(ACTIVE)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  client           Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([clientId])
+  @@unique([clientId, tenantId])
+  @@map("microsoft_tenants")
+}
+
+model Server {
+  id           String      @id @default(cuid())
+  clientId     String
+  name         String
+  hostname     String?
+  ipAddress    String?
+  os           String?     // Windows Server 2022 etc
+  role         String?     // AD, File, SQL, RDS, Hyper-V etc
+  location     String?
+  status       AssetStatus @default(ACTIVE)
+  notes        String?     @db.Text
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  client       Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  credentials  CredentialServer[]
+  documents    Document[]
+
+  @@index([clientId])
+  @@index([status])
+  @@map("servers")
+}
+
+model Printer {
+  id           String      @id @default(cuid())
+  clientId     String
+  name         String
+  model        String?
+  ipAddress    String?
+  adminPanel   String?  // URL painel web
+  location     String?
+  status       AssetStatus @default(ACTIVE)
+  notes        String?     @db.Text
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  client       Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  credentials  CredentialPrinter[]
+
+  @@index([clientId])
+  @@map("printers")
+}
+
+model Network {
+  id           String      @id @default(cuid())
+  clientId     String
+  name         String      // VLAN 10, Rede MATRIZ etc
+  vlan         Int?
+  cidr         String?     // 10.0.10.0/24
+  gateway      String?
+  dnsServers   String?     // JSON array opcional
+  location     String?
+  status       AssetStatus @default(ACTIVE)
+  notes        String?     @db.Text
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  client       Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  credentials  CredentialNetwork[]
+
+  @@index([clientId])
+  @@map("networks")
+}
+
+model Document {
+  id           String      @id @default(cuid())
+  clientId     String
+  title        String
+  type         String?     // Manual, Procedimento, Diagrama, Relatório etc
+  fileName     String?
+  filePath     String?
+  fileSize     Int?
+  mimeType     String?
+  storageRef   String?     // referência interna /app/uploads
+  notes        String?     @db.Text
+  status       AssetStatus @default(ACTIVE)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  client       Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  server       Server?     @relation(fields: [serverId], references: [id], onDelete: SetNull)
+  serverId     String?
+  linkedCredentials CredentialDocument[]
+
+  @@index([clientId])
+  @@index([type])
+  @@map("documents")
+}
+
+model Diagram {
+  id           String      @id @default(cuid())
+  clientId     String
+  title        String
+  description  String?     @db.Text
+  layout       Json?       // Posições dos nós (documentação complementar, nunca contém segredos)
+  options      Json?       // ocultar IPs/hostnames na exportação etc
+  status       AssetStatus @default(ACTIVE)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  client       Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([clientId])
+  @@map("diagrams")
+}
+
+// ====== Auditoria (melhorado: cliente, credencial, resultado, action; NUNCA valores segredo) ======
+
+model AuditLog {
+  id            String       @id @default(cuid())
+  userId        String?
+  clientId      String?
+  credentialId  String?
+  action        String       // CREDENTIAL_CREATE / UPDATE / DELETE / REVEAL / COPY / AUTHZ_DENIED / TWO_FACTOR_* etc
+  entityType    String
+  entityId      String?
+  result        AuditResult  @default(SUCCESS)
+  ipAddress     String?
+  userAgent     String?
+  metadata      Json?        // NÃO PODE CONTER SEGREDOS. Ex.: { category: "M365_TENANT", titleLen: 28 }
+
+  createdAt     DateTime     @default(now())
+
+  user          User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  client        Client?      @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  credential    Credential?  @relation(fields: [credentialId], references: [id], onDelete: SetNull)
 
   @@index([userId])
+  @@index([clientId])
+  @@index([credentialId])
   @@index([action])
+  @@index([result])
   @@index([entityType, entityId])
   @@index([createdAt])
   @@map("audit_logs")

@@ -11,7 +11,31 @@ const nextConfig = {
   experimental: {
     serverActions: {
       bodySizeLimit: "10mb"
+    },
+    serverComponentsExternalPackages: ["@node-rs/argon2", "bcryptjs", "otplib"]
+  },
+  webpack: (config, { isServer }) => {
+    if (isServer) {
+      // Ignora pacotes nativos opcionais ausentes do @node-rs/argon2 (plataformas não usadas)
+      config.resolve = config.resolve ?? {};
+      config.resolve.alias = {
+        ...config.resolve.alias,
+        "@node-rs/argon2-openharmony-arm64": false,
+        "@node-rs/argon2-openharmony-x64": false,
+        "@node-rs/argon2-openharmony-arm": false,
+        "@node-rs/argon2-wasm32-wasi": false,
+        "@node-rs/argon2-android-arm-eabi": false,
+        "@node-rs/argon2-android-arm64": false,
+        "@node-rs/argon2-android-x64": false,
+        "@node-rs/argon2-darwin-x64": false,
+        "@node-rs/argon2-darwin-arm64": false,
+        "@node-rs/argon2-freebsd-x64": false,
+        "@node-rs/argon2-linux-arm-gnueabihf": false,
+        "@node-rs/argon2-linux-arm64-gnu": false,
+        "@node-rs/argon2-linux-x64-gnu": false
+      };
     }
+    return config;
   },
   async headers() {
     return [

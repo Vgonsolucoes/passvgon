@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import bcrypt from "bcryptjs";
+import { hashPassword } from "@/lib/password";
 
 interface Args {
   email?: string;
@@ -31,14 +31,11 @@ function parseArgs(argv: string[]): Args {
 function validateArgs(args: Args): string[] {
   const errors: string[] = [];
   if (!args.email) errors.push("--email é obrigatório");
-  else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(args.email))
-    errors.push("Email inválido");
+  else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(args.email)) errors.push("Email inválido");
   if (!args.name) errors.push("--name é obrigatório");
-  else if (args.name.trim().length < 2)
-    errors.push("Nome deve ter pelo menos 2 caracteres");
+  else if (args.name.trim().length < 2) errors.push("Nome deve ter pelo menos 2 caracteres");
   if (!args.password) errors.push("--password é obrigatório");
-  else if (args.password.length < 6)
-    errors.push("Senha deve ter pelo menos 6 caracteres");
+  else if (args.password.length < 8) errors.push("Senha deve ter pelo menos 8 caracteres");
   return errors;
 }
 
@@ -49,9 +46,7 @@ async function main() {
   if (errors.length > 0) {
     console.error("Erros de validação:");
     errors.forEach((e) => console.error(`  - ${e}`));
-    console.error(
-      "\nUso: tsx scripts/create-admin.ts --email <email> --name <nome> --password <senha>"
-    );
+    console.error("\nUso: tsx scripts/create-admin.ts --email <email> --name <nome> --password <senha>");
     process.exit(1);
   }
 
@@ -60,22 +55,27 @@ async function main() {
   try {
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) {
-      console.log(
-        `Usuário com email ${email} já existe. Nenhuma alteração feita.`
-      );
+      const { hash, algo } = await hashPassword(password);
+      await prisma.user.update({
+        where: { email },
+        data: { passwordHash: hash, passwordAlgo: algo, role: "ADMIN", status: "ACTIVE" }
+      });
+      console.log(`Usuário ${email} já existia. Senha atualizada (${algo}) e role=ADMIN garantido.`);
       process.exit(0);
     }
 
-    const hashedPassword = await bcrypt.hash(password, 12);
+    const { hash, algo } = await hashPassword(password);
 
     const user = await prisma.user.create({
       data: {
         email,
         name,
-        passwordHash: hashedPassword,
+        passwordHash: hash,
+        passwordAlgo: algo,
         role: "ADMIN",
+        status: "ACTIVE"
       },
-      select: { id: true, email: true, name: true, role: true },
+      select: { id: true, email: true, name: true, role: true, passwordAlgo: true }
     });
 
     console.log("Usuário admin criado com sucesso:");
@@ -83,6 +83,7 @@ async function main() {
     console.log(`  Nome: ${user.name}`);
     console.log(`  Email: ${user.email}`);
     console.log(`  Role: ${user.role}`);
+    console.log(`  Hash Algo: ${user.passwordAlgo ?? "bcrypt"}`);
   } catch (error) {
     console.error("Erro ao criar usuário admin:");
     if (error instanceof Error) {
