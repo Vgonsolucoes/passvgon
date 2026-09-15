@@ -106,7 +106,7 @@ export default function LoginForm({
                   <a
                     href="#"
                     className="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline">
-                    Esqueci a senha
+                    Esqueci minha senha
                   </a>
                 </div>
                 <input
