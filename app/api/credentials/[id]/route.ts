@@ -24,6 +24,7 @@ const CATEGORY_LABELS: Record<CredentialCategory, string> = {
 
 const UpdateSchema = z
   .object({
+    clientId: z.string().min(2).max(120).optional(),
     title: z.string().min(2).max(240).optional(),
     category: z
       .enum([
@@ -40,8 +41,6 @@ const UpdateSchema = z
       ])
       .optional(),
     username: z.string().max(240).nullable().optional(),
-    // ⚠️ Regra de edição: password = null/undefined NÃO APAGA A SENHA ATUAL.
-    // Só altera quando password é string não vazia (nova senha informada).
     password: z.string().max(2000).optional(),
     url: z.string().max(2048).nullable().optional(),
     hostname: z.string().max(240).nullable().optional(),
@@ -50,7 +49,6 @@ const UpdateSchema = z
     unit: z.string().max(120).nullable().optional(),
     environment: z.string().max(120).nullable().optional(),
     owner: z.string().max(120).nullable().optional(),
-    // observações: se null → limpar campo; se undefined → não mexer; se string não vazia → criptografar nova
     notes: z.string().max(20000).nullable().optional(),
     expiresAt: z.string().datetime().nullable().optional()
   })
@@ -202,6 +200,22 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
       { message: "Dados inválidos", errors: parsed.error.flatten() },
       { status: 422 }
     );
+  }
+  if (parsed.data.clientId && parsed.data.clientId !== current.clientId) {
+    const { ip, ua } = extractRequestMeta(req);
+    await audit({
+      userId: session.user.id,
+      clientId: parsed.data.clientId,
+      credentialId: id,
+      action: AUDITABLE_ACTIONS.AUTHZ_DENIED,
+      entityType: "credential",
+      entityId: id,
+      result: "DENIED",
+      ipAddress: ip,
+      userAgent: ua,
+      metadata: { operation: "UPDATE_CLIENT_MISMATCH" }
+    });
+    return NextResponse.json({ message: "Cliente inconsistente" }, { status: 400 });
   }
   const p = parsed.data;
   const updateData: Parameters<typeof prisma.credential.update>[0]["data"] = {
