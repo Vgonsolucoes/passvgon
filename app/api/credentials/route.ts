@@ -1,14 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import {
-  AUDITABLE_ACTIONS,
-  hasAnyPermission,
-  roleIsAtLeastAdmin,
-  DEFAULT_MEMBER_PERMISSIONS
-} from "@/lib/permissions";
+import { AUDITABLE_ACTIONS } from "@/lib/permissions";
 import { encryptSecret } from "@/lib/crypto";
 import { audit, extractRequestMeta } from "@/lib/audit";
+import { getMembershipOrFail } from "@/lib/membership";
 import type { CredentialCategory, Prisma } from "@prisma/client";
 import { z } from "zod";
 
@@ -328,29 +324,4 @@ export async function POST(req: NextRequest) {
     { credential: { ...credential, categoryLabel: CATEGORY_LABELS[credential.category] } },
     { status: 201 }
   );
-}
-
-// ============ Helpers internos ============
-export async function getMembershipOrFail(
-  userId: string,
-  clientId: string,
-  required: Parameters<typeof hasAnyPermission>[0]["required"]
-) {
-  const adminCheck = await prisma.user.findUnique({
-    where: { id: userId, status: "ACTIVE" },
-    select: { role: true }
-  });
-  if (!adminCheck) return { ok: false as const, reason: "Usuário inativo ou inexistente" };
-  if (roleIsAtLeastAdmin(adminCheck.role)) {
-    return { ok: true as const, permissions: DEFAULT_MEMBER_PERMISSIONS };
-  }
-  const mem = await prisma.clientMembership.findUnique({
-    where: { clientId_userId: { clientId, userId } },
-    select: { permissions: true, isPrimary: true }
-  });
-  if (!mem) return { ok: false as const, reason: "Sem vínculo com o cliente" };
-  if (!hasAnyPermission({ role: adminCheck.role, membershipPermissions: mem.permissions, required })) {
-    return { ok: false as const, reason: "Permissões insuficientes" };
-  }
-  return { ok: true as const, permissions: mem.permissions };
 }

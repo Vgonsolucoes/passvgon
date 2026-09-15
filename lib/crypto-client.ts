@@ -5,11 +5,13 @@ const SYMBOLS = "!@#$%^&*()-_=+[]{};:,.<>?/";
 const ALL = UPPER + LOWER + NUMBERS + SYMBOLS;
 
 function getCrypto(): Crypto {
-  if (typeof globalThis !== "undefined" && globalThis.crypto?.getRandomValues) {
-    return globalThis.crypto;
+  const g = globalThis as unknown as { crypto?: Crypto };
+  if (typeof g !== "undefined" && g.crypto && typeof g.crypto.getRandomValues === "function") {
+    return g.crypto;
   }
-  if (typeof window !== "undefined" && window.crypto?.getRandomValues) {
-    return window.crypto;
+  const w = (typeof window !== "undefined" ? window : undefined) as unknown as { crypto?: Crypto } | undefined;
+  if (w && w.crypto && typeof w.crypto.getRandomValues === "function") {
+    return w.crypto;
   }
   throw new Error("Ambiente sem suporte a Web Crypto API.");
 }
